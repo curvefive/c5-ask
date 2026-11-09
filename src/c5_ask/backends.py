@@ -398,10 +398,32 @@ class ClaudeCodeBackend:
         return {"spares": sorted(m for m, p in self.spares.items() if p.returncode is None)}
 
 
+_reaping: set[asyncio.Task] = set()
+
+
 def _kill(proc: asyncio.subprocess.Process) -> None:
+    """Kill now, and wait for the exit in the background.
+
+    Waiting matters: an unreaped process keeps its asyncio transport open, which then gets
+    closed by the GC after the event loop is gone ("Event loop is closed" on shutdown).
+    """
     if proc.returncode is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
+    task = asyncio.get_running_loop().create_task(_wait_exit(proc))
+    _reaping.add(task)
+    task.add_done_callback(_reaping.discard)
+
+
+async def _wait_exit(proc: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), 5)
+
+
+async def wait_reaped() -> None:
+    """Wait until every process killed so far has exited (call before the loop closes)."""
+    while _reaping:
+        await asyncio.gather(*list(_reaping), return_exceptions=True)
 
 
 def claude_event_text(event: object) -> str:

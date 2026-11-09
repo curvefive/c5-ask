@@ -28,7 +28,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from c5_ask import __version__
-from c5_ask.backends import ClaudeCodeBackend, CodexBackend
+from c5_ask.backends import ClaudeCodeBackend, CodexBackend, wait_reaped
 from c5_ask.providers import Message, ProviderError, validate_messages, validate_model
 
 log = logging.getLogger("c5_ask.daemon")
@@ -94,8 +94,14 @@ class Daemon:
         self.claude = ClaudeCodeBackend(workdir)
         self.started = time.time()
         self.stopping = asyncio.Event()
+        self.handlers: set[asyncio.Task] = set()  # one per open client connection
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        self.handlers.add(task)
+        task.add_done_callback(self.handlers.discard)
+
         async def send(obj: dict) -> None:
             writer.write(json.dumps(obj).encode() + b"\n")
             await writer.drain()
@@ -187,11 +193,23 @@ class Daemon:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self.stopping.set)
         log.info("listening on %s (pid %s)", path, os.getpid())
-        asyncio.create_task(self.warm_up())
-        async with server:
-            await self.stopping.wait()
+        warm_up = asyncio.create_task(self.warm_up())
+        await self.stopping.wait()
+
+        # Deterministic shutdown: stop accepting, cancel the warm-up and every in-flight
+        # request (their cleanup kills/interrupts CLI work), then stop the CLIs themselves.
+        # Otherwise a stop that lands mid-warm-up could leave a half-started CLI behind, and
+        # server.wait_closed() would wait for open requests (up to the idle timeout).
+        server.close()
+        pending = [warm_up, *self.handlers]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         await self.codex.stop()
         await self.claude.stop()
+        await wait_reaped()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(server.wait_closed(), 5)
         path.unlink(missing_ok=True)
         log.info("stopped")
 

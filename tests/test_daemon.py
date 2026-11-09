@@ -2,7 +2,6 @@
 
 import json
 import os
-import subprocess
 import sys
 import textwrap
 import time
@@ -239,13 +238,12 @@ def test_client_disconnect_kills_claude_process(fake_env):
 
 
 def _alive(pid: int) -> bool:
+    # The daemon reaps processes it kills, so "gone" means os.kill finds no such pid.
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    # Killed but not yet reaped shows as a zombie; that counts as gone.
-    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
-    return state.stdout.strip()[:1] not in ("", "Z")
+    return True
 
 
 def test_spare_processes_are_capped(fake_env, capsys):
@@ -302,3 +300,31 @@ def test_failing_model_gets_no_spare(fake_env, capsys):
     time.sleep(0.5)
     daemon.control("status")
     assert "bad-model" not in json.loads(capsys.readouterr().out)["claude-code"]["spares"]
+
+
+def test_stop_during_inflight_request_is_prompt(fake_env):
+    daemon.ensure_running()
+    pid_file = fake_env / "hang.pid"
+    request = {
+        "op": "ask",
+        "provider": "claude-code",
+        "model": "claude-haiku-5-5",
+        "messages": [{"role": "user", "content": f"HANG {pid_file}"}],
+    }
+    with daemon._connect(10) as sock, sock.makefile("rwb") as f:
+        f.write(json.dumps(request).encode() + b"\n")
+        f.flush()
+        assert json.loads(f.readline()) == {"delta": "partial"}
+        started = time.monotonic()
+        assert daemon.control("stop") == 0  # must not wait for the hung answer
+        assert time.monotonic() - started < 8
+    assert not daemon.is_running()
+    assert not _alive(int(pid_file.read_text()))
+
+
+def test_stop_right_after_start_leaves_no_daemon(fake_env, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_SLOW_EXIT", "1")
+    for _ in range(2):  # stop while codex is still warming up
+        daemon.ensure_running()
+        assert daemon.control("stop") == 0
+        assert not daemon._daemon_process_alive()
