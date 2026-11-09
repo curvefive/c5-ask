@@ -1,0 +1,49 @@
+[project]
+name = "c5-ask"
+dynamic = ["version"]
+description = "CurveFive terminal helper: ask Claude, OpenAI or Gemini a question and get a concise answer."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "CurveFive" }]
+keywords = ["cli", "llm", "claude", "openai", "gemini", "codex", "terminal"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Utilities",
+]
+dependencies = [
+  "rich>=13.7,<16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<10.0",
+  "pytest-cov>=5.0,<8.0",
+  "ruff>=0.5,<1.0",
+]
+
+[project.scripts]
+q = "c5_ask.cli:main"
+
+[tool.hatch.version]
+path = "src/c5_ask/__init__.py"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=c5_ask --cov-report=term-missing"
+testpaths = ["tests"]
