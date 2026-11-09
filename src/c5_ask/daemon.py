@@ -199,7 +199,7 @@ class Daemon:
 def run_daemon() -> int:
     """Run in the foreground (what launchd and auto-start execute)."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    lock = open(state_dir() / "daemon.lock", "w")  # noqa: SIM115 - held for process lifetime
+    lock = open(lock_path(), "a")  # noqa: SIM115 - held for process lifetime
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -250,9 +250,28 @@ def is_running() -> bool:
     return daemon_status() is not None
 
 
-def _wait_stopped(timeout: float = 10) -> None:
+def lock_path() -> Path:
+    return state_dir() / "daemon.lock"
+
+
+def _daemon_process_alive() -> bool:
+    """True while a daemon holds the lock: serving, or still shutting down its CLIs.
+
+    The socket goes away first on shutdown, so "not reachable" alone doesn't mean a new
+    daemon can start yet.
+    """
+    with open(lock_path(), "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return False
+
+
+def _wait_stopped(timeout: float = 15) -> None:
     deadline = time.monotonic() + timeout
-    while is_running() and time.monotonic() < deadline:
+    while (is_running() or _daemon_process_alive()) and time.monotonic() < deadline:
         time.sleep(0.1)
 
 
@@ -284,8 +303,13 @@ def ensure_running() -> None:
     while time.monotonic() < deadline:
         if is_running():
             return
-        # Exit code 0 means another q won the race to start it; keep waiting for that one.
-        if proc.poll() not in (None, 0):
+        code = proc.poll()
+        if code == 0 and not _daemon_process_alive():
+            # It found the lock taken, but whoever held it has exited since (a daemon that
+            # was still shutting down): start again. If another q's daemon is starting, it
+            # holds the lock and we just keep waiting for it to listen.
+            proc = spawn_background()
+        elif code not in (None, 0):
             break
         time.sleep(0.1)
     lines = log_path().read_text(errors="replace").strip().splitlines()

@@ -72,6 +72,10 @@ def validate_messages(messages: object) -> list[Message]:
     return messages  # type: ignore[return-value]
 
 
+# API provider -> provider that uses the same vendor's subscription instead of a key.
+SUBSCRIPTION_ALTERNATIVE = {"claude": "claude-code", "openai": "codex"}
+
+
 def build_request(
     provider: str, model: str, api_key: str, messages: list[Message]
 ) -> tuple[str, dict[str, str], dict]:
@@ -159,7 +163,9 @@ def api_key_for(provider: str) -> str:
     if not key and provider == "gemini":
         key = os.environ.get("GOOGLE_API_KEY", "").strip()
     if not key:
-        raise ProviderError(f"{env} is not set. Export it in your shell profile.")
+        hint = SUBSCRIPTION_ALTERNATIVE.get(provider)
+        alt = f", or use your subscription with `-p {hint}` (no key needed)" if hint else ""
+        raise ProviderError(f"{env} is not set. Export it in your shell profile{alt}.")
     return key
 
 

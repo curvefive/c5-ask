@@ -76,7 +76,7 @@ def test_iter_sse_data_skips_noise_and_stops_at_done():
 
 def test_missing_api_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(ProviderError, match="ANTHROPIC_API_KEY"):
+    with pytest.raises(ProviderError, match="ANTHROPIC_API_KEY.*-p claude-code"):
         list(providers.stream_answer("claude", "m", MESSAGES))
 
 

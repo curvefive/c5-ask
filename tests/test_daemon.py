@@ -23,6 +23,9 @@ if sys.argv[1:] == ["features", "list"]:
     print(os.environ.get("FAKE_CODEX_FEATURES",
           "shell_tool  stable  true\\nweb_search_cached  removed  false\\napps  stable  true"))
     sys.exit(0)
+import os, signal
+if os.environ.get("FAKE_CODEX_SLOW_EXIT"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)  # daemon shutdown has to wait, then kill
 # Every tool feature the installed codex knows must be disabled; removed ones must not be passed.
 args = sys.argv[1:]
 assert args[0] == "app-server", args
@@ -261,11 +264,26 @@ def test_codex_refuses_to_run_if_tools_cannot_be_disabled(fake_env, monkeypatch,
 
 
 def test_outdated_daemon_is_replaced(fake_env, monkeypatch):
+    # The old daemon takes seconds to shut down (codex ignores SIGTERM). Its socket is gone
+    # early but it still holds the lock; the replacement must wait for it, not give up.
+    monkeypatch.setenv("FAKE_CODEX_SLOW_EXIT", "1")
     daemon.ensure_running()
+    deadline = time.monotonic() + 10
+    while not daemon.daemon_status()["codex"]["running"] and time.monotonic() < deadline:
+        time.sleep(0.1)
     old_pid = daemon.daemon_status()["pid"]
     monkeypatch.setattr(daemon, "__version__", "0.0.0-new")  # as if q was just upgraded
     daemon.ensure_running()
     assert daemon.daemon_status()["pid"] != old_pid
+
+
+def test_restart_waits_for_slow_shutdown(fake_env, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_CODEX_SLOW_EXIT", "1")
+    assert ask(capsys, "-p", "codex", "warm")[0] == 0  # codex running in the daemon
+    old_pid = daemon.daemon_status()["pid"]
+    assert daemon.control("restart") == 0
+    status = daemon.daemon_status()
+    assert status and status["pid"] != old_pid
 
 
 def test_private_dir_fixes_permissions_and_rejects_symlinks(tmp_path):
